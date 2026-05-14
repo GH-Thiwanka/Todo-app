@@ -1,6 +1,9 @@
+import 'dart:convert';
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
-import 'dart:convert';
+import 'package:image_picker/image_picker.dart';
 
 class Dashboard extends StatefulWidget {
   const Dashboard({super.key});
@@ -11,8 +14,14 @@ class Dashboard extends StatefulWidget {
 
 class _DashboardState extends State<Dashboard> {
   List<dynamic> _tasks = [];
+
   final TextEditingController _taskController = TextEditingController();
+
   bool _isLoading = true;
+
+  File? _selectedImage;
+
+  final ImagePicker _picker = ImagePicker();
 
   final TextStyle _gaeguStyle = const TextStyle(
     fontSize: 24,
@@ -21,73 +30,129 @@ class _DashboardState extends State<Dashboard> {
     color: Colors.black,
   );
 
+  final String baseUrl =
+      'https://jbaodzbzwa.execute-api.us-east-1.amazonaws.com/prod/tasks/';
+
   @override
   void initState() {
     super.initState();
-    _fetchTasks(); // Load data from AWS on startup
+    _fetchTasks();
   }
 
-  // GET data from your AWS Invoke Link
-  Future<void> _fetchTasks() async {
-    final url = Uri.parse(
-      'https://jbaodzbzwa.execute-api.us-east-1.amazonaws.com/prod/tasks/',
+  // PICK IMAGE
+  Future<void> _pickImage() async {
+    final XFile? pickedImage = await _picker.pickImage(
+      source: ImageSource.gallery,
+      imageQuality: 70,
     );
 
+    if (pickedImage != null) {
+      setState(() {
+        _selectedImage = File(pickedImage.path);
+      });
+    }
+  }
+
+  // CONVERT IMAGE TO BASE64
+  Future<String?> _convertImageToBase64() async {
+    if (_selectedImage == null) return null;
+
+    final bytes = await _selectedImage!.readAsBytes();
+
+    return base64Encode(bytes);
+  }
+
+  // FETCH TASKS
+  Future<void> _fetchTasks() async {
     try {
-      final response = await http.get(url);
+      final response = await http.get(Uri.parse(baseUrl));
+
       if (response.statusCode == 200 || response.statusCode == 201) {
         setState(() {
           _tasks = jsonDecode(response.body);
           _isLoading = false;
         });
       } else {
-        debugPrint("Error fetching tasks: ${response.statusCode}");
         setState(() => _isLoading = false);
       }
     } catch (e) {
-      debugPrint("Error fetching tasks: $e");
+      debugPrint("Fetch Error: $e");
       setState(() => _isLoading = false);
     }
   }
 
-  // Function to POST a new task to AWS
+  // CREATE TASK
   Future<void> _postTask() async {
-    final String taskText = _taskController.text.trim();
+    final taskText = _taskController.text.trim();
 
     if (taskText.isEmpty) return;
 
-    final url = Uri.parse(
-      'https://jbaodzbzwa.execute-api.us-east-1.amazonaws.com/prod/tasks/',
-    );
+    String? base64Image = await _convertImageToBase64();
 
     try {
       final response = await http.post(
-        url,
+        Uri.parse(baseUrl),
         headers: {'Content-Type': 'application/json'},
         body: jsonEncode({
-          'taskId': DateTime.now().millisecondsSinceEpoch
-              .toString(), // Unique ID for the task
-          'taskName':
-              taskText, // Ensure this key matches your AWS Lambda/DynamoDB schema
+          "taskId": DateTime.now().millisecondsSinceEpoch.toString(),
+          "taskName": taskText,
+          "status": "pending",
+          "image": base64Image,
         }),
       );
 
       if (response.statusCode == 200 || response.statusCode == 201) {
-        // Clear text field and refresh list to show the new item from the server
         _taskController.clear();
+
+        setState(() {
+          _selectedImage = null;
+        });
+
         _fetchTasks();
       } else {
-        debugPrint("Failed to add task: ${response.statusCode}");
+        debugPrint(response.body);
       }
     } catch (e) {
-      debugPrint("Error posting task: $e");
+      debugPrint("Post Error: $e");
     }
   }
 
+  // UPDATE TASK
+  Future<void> _updateTask(String id, String newTitle, String status) async {
+    try {
+      final response = await http.put(
+        Uri.parse("$baseUrl$id"),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({"taskName": newTitle, "status": status}),
+      );
+
+      if (response.statusCode == 200 || response.statusCode == 201) {
+        _fetchTasks();
+      }
+    } catch (e) {
+      debugPrint("Update Error: $e");
+    }
+  }
+
+  // DELETE TASK
+  Future<void> _deleteTask(String id) async {
+    try {
+      final response = await http.delete(Uri.parse("$baseUrl$id"));
+
+      if (response.statusCode == 200 || response.statusCode == 204) {
+        _fetchTasks();
+      }
+    } catch (e) {
+      debugPrint("Delete Error: $e");
+    }
+  }
+
+  // EDIT DIALOG
   Future<void> _showEditDialog(
     String id,
     String currentTitle,
     String status,
+    String? imageUrl,
   ) async {
     final TextEditingController editController = TextEditingController(
       text: currentTitle,
@@ -98,106 +163,71 @@ class _DashboardState extends State<Dashboard> {
       builder: (context) {
         return AlertDialog(
           title: Text('Edit Task', style: _gaeguStyle),
-          content: TextField(
-            controller: editController,
-            style: _gaeguStyle.copyWith(fontSize: 18),
-            decoration: const InputDecoration(
-              enabledBorder: UnderlineInputBorder(
-                borderSide: BorderSide(color: Colors.green),
-              ),
+          content: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                // SHOW IMAGE
+                if (imageUrl != null)
+                  ClipRRect(
+                    borderRadius: BorderRadius.circular(12),
+                    child: Image.network(
+                      imageUrl,
+                      cacheHeight: 100,
+                      cacheWidth: 100,
+                      width: double.infinity,
+                      fit: BoxFit.cover,
+                    ),
+                  ),
+                const SizedBox(height: 15),
+
+                TextField(
+                  controller: editController,
+                  style: _gaeguStyle.copyWith(fontSize: 18),
+                  decoration: const InputDecoration(
+                    enabledBorder: UnderlineInputBorder(
+                      borderSide: BorderSide(color: Colors.green),
+                    ),
+                  ),
+                ),
+              ],
             ),
           ),
           actions: [
+            // UPDATE
             TextButton(
               onPressed: () async {
                 await _updateTask(id, editController.text, status);
+
                 if (mounted) Navigator.pop(context);
               },
-              child: const Text(
-                'Update',
-                style: TextStyle(color: Colors.redAccent),
-              ),
+              child: const Text('Update', style: TextStyle(color: Colors.red)),
             ),
-            // DELETE BUTTON
+
+            // DELETE
             ElevatedButton(
-              style: ElevatedButton.styleFrom(
-                backgroundColor: Colors.red.withOpacity(0.7),
-              ),
+              style: ElevatedButton.styleFrom(backgroundColor: Colors.red),
               onPressed: () async {
                 await _deleteTask(id);
+
                 if (mounted) Navigator.pop(context);
               },
               child: const Text(
                 'Delete',
-                style: TextStyle(
-                  color: Colors.white,
-                  fontWeight: FontWeight.bold,
-                ),
+                style: TextStyle(color: Colors.white),
               ),
             ),
-
-            /* const Spacer(),
-            TextButton(
-              onPressed: () => Navigator.pop(context),
-              child: const Text('Cancel', style: TextStyle(color: Colors.grey)),
-            ),*/
           ],
         );
       },
     );
   }
 
-  Future<void> _updateTask(String id, String newTitle, String status) async {
-    // Check if your API expects /tasks/ID or just /tasks/
-    final url = Uri.parse(
-      'https://jbaodzbzwa.execute-api.us-east-1.amazonaws.com/prod/tasks/$id',
-    );
-
-    try {
-      final response = await http.put(
-        url,
-        headers: {'Content-Type': 'application/json'},
-        body: jsonEncode({
-          'taskId': id,
-          'taskName': newTitle,
-          'status': status,
-        }), // Ensure this matches your AWS schema
-      );
-
-      if (response.statusCode == 200 || response.statusCode == 201) {
-        _fetchTasks(); // Refresh list after update
-      }
-    } catch (e) {
-      debugPrint("Error updating task: $e");
-    }
-  }
-
-  Future<void> _deleteTask(String id) async {
-    // Ensure the URL matches your AWS path for deletion
-    final url = Uri.parse(
-      'https://jbaodzbzwa.execute-api.us-east-1.amazonaws.com/prod/tasks/$id',
-    );
-
-    try {
-      final response = await http.delete(
-        url,
-        headers: {'Content-Type': 'application/json'},
-      );
-
-      if (response.statusCode == 200 || response.statusCode == 204) {
-        await _fetchTasks(); // Refresh list after deleting
-      } else {
-        debugPrint("Delete failed with status: ${response.statusCode}");
-      }
-    } catch (e) {
-      debugPrint("Error deleting task: $e");
-    }
-  }
-
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: Colors.white,
+
       body: SafeArea(
         child: Column(
           children: [
@@ -206,10 +236,12 @@ class _DashboardState extends State<Dashboard> {
               child: Column(
                 children: [
                   const SizedBox(height: 50),
-                  Text('My silly little tasks', style: _gaeguStyle),
-                  const SizedBox(height: 60),
 
-                  // Input field (UI only for now)
+                  Text('My silly little tasks', style: _gaeguStyle),
+
+                  const SizedBox(height: 50),
+
+                  // INPUT
                   Row(
                     children: [
                       Expanded(
@@ -236,8 +268,22 @@ class _DashboardState extends State<Dashboard> {
                           ),
                         ),
                       ),
-                      const SizedBox(width: 20),
-                      // Wrap the '+' Text in a GestureDetector for tapping
+
+                      const SizedBox(width: 15),
+
+                      // IMAGE PICKER
+                      GestureDetector(
+                        onTap: _pickImage,
+                        child: const Icon(
+                          Icons.image,
+                          size: 35,
+                          color: Colors.green,
+                        ),
+                      ),
+
+                      const SizedBox(width: 15),
+
+                      // ADD BUTTON
                       GestureDetector(
                         onTap: _postTask,
                         child: const Text(
@@ -252,46 +298,105 @@ class _DashboardState extends State<Dashboard> {
                     ],
                   ),
 
-                  const SizedBox(height: 40),
+                  const SizedBox(height: 20),
+
+                  // PREVIEW IMAGE
+                  if (_selectedImage != null)
+                    Stack(
+                      children: [
+                        ClipRRect(
+                          borderRadius: BorderRadius.circular(12),
+                          child: Image.file(
+                            _selectedImage!,
+                            height: 180,
+                            width: double.infinity,
+                            fit: BoxFit.cover,
+                          ),
+                        ),
+
+                        Positioned(
+                          top: 10,
+                          right: 10,
+                          child: GestureDetector(
+                            onTap: () {
+                              setState(() {
+                                _selectedImage = null;
+                              });
+                            },
+                            child: Container(
+                              padding: const EdgeInsets.all(6),
+                              decoration: const BoxDecoration(
+                                color: Colors.red,
+                                shape: BoxShape.circle,
+                              ),
+                              child: const Icon(
+                                Icons.close,
+                                color: Colors.white,
+                              ),
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+
+                  const SizedBox(height: 30),
+
                   Text(
                     'task list',
                     style: _gaeguStyle.copyWith(color: Colors.redAccent),
                   ),
-
-                  // Displaying the data from AWS
                 ],
               ),
             ),
+
             Expanded(
               child: _isLoading
-                  ? const Center(
-                      child: CircularProgressIndicator(color: Colors.green),
-                    )
+                  ? const Center(child: CircularProgressIndicator())
                   : ListView.builder(
                       itemCount: _tasks.length,
                       itemBuilder: (context, index) {
-                        return ListTile(
-                          horizontalTitleGap: 0,
-                          onTap: () {
-                            // Pass the ID and current Title from your data source
-                            _showEditDialog(
-                              _tasks[index]['taskId'].toString(),
-                              _tasks[index]['taskName'].toString(),
-                              _tasks[index]['status'].toString(),
-                            );
-                          },
-                          leading: Padding(
-                            padding: const EdgeInsets.symmetric(
-                              horizontal: 15.0,
-                            ),
-                            child: const Icon(
-                              Icons.check_box_outline_blank,
-                              color: Colors.redAccent,
-                            ),
+                        final task = _tasks[index];
+
+                        return Card(
+                          color: Colors.green[50],
+                          margin: const EdgeInsets.symmetric(
+                            horizontal: 20,
+                            vertical: 10,
                           ),
-                          title: Text(
-                            _tasks[index]['taskName'] ?? "No Title",
-                            style: _gaeguStyle.copyWith(fontSize: 18),
+
+                          child: ListTile(
+                            onTap: () {
+                              _showEditDialog(
+                                task['taskId'].toString(),
+                                task['taskName'].toString(),
+                                task['status'].toString(),
+                                task['imageUrl'].toString(),
+                              );
+                            },
+
+                            leading: const Icon(
+                              Icons.task_alt,
+                              color: Colors.green,
+                            ),
+
+                            title: Text(
+                              task['taskName'] ?? "No Title",
+                              style: _gaeguStyle.copyWith(fontSize: 18),
+                            ),
+
+                            subtitle: Text(task['status'] ?? "pending"),
+
+                            trailing: task['imageUrl'] != null
+                                ? ClipRRect(
+                                    borderRadius: BorderRadius.circular(8),
+                                    child: Image.network(
+                                      task['imageUrl'].toString(),
+                                      width: 50,
+                                      height: 50,
+                                      fit: BoxFit.cover,
+                                    ),
+                                  )
+                                : null,
                           ),
                         );
                       },
